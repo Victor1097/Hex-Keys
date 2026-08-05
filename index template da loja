@@ -1,0 +1,87 @@
+import { setCookie, deleteCookie } from "@/lib/utils.tsx";
+
+export const AuthContext = React.createContext<AuthContext.Props>({} as AuthContext.Props);
+
+export namespace AuthContext {
+    export type Status = "AUTHENTICATED" | "UNAUTHENTICATED";
+
+    export type Props = {
+        status: Status;
+        hasSession: boolean;
+        sessionId: string;
+        user: SharpifyApiTypes.UserProps;
+        refetch: () => Promise<any>;
+        logOut: () => Promise<any>;
+    };
+}
+
+export const AuthProviderClient = ({ children }: { children: React.ReactNode }) => {
+    const {
+        store,
+        isSsr,
+        user: providedUser,
+        sharpifyApi,
+    } = React.useContext(SharpifyApi.SharpifyReact.TemplateContext);
+    const [sessionId, setSessionId] = React.useState<string>(
+        () => SharpifyApi.SharpifyReact.getCookies().sessionId,
+    );
+    const queryClient = ReactQuery.useQueryClient();
+
+    if (isSsr) return children;
+
+    const queryKey = ["current-user", providedUser?.customerId];
+    const {
+        data: user,
+        isFetched,
+        isFetching,
+        refetch,
+    } = ReactQuery.useQuery({
+        queryKey,
+        queryFn: () =>
+            SharpifyApi.SharpifyReact.ReactQueryAdapter(
+                sharpifyApi.api.v1.management.auth.getCurrentSession(),
+            ),
+        initialData: providedUser,
+        retry: false,
+        enabled: false,
+    });
+
+    React.useEffect(() => {
+        (async () => {
+            if (sessionId) return;
+            const req = await sharpifyApi.api.v1.eCommerce.analytics.createSession({ sessionId });
+            if (!req.success) return;
+
+            setCookie({ name: "sessionId", value: req.data.id, days: 365 });
+            setSessionId(req.data.id);
+        })();
+    }, []);
+
+    async function logOut() {
+        deleteCookie({ name: "customerAccessToken" });
+        queryClient.setQueryData(queryKey, null);
+    }
+    let status: AuthContext.Status = "UNAUTHENTICATED";
+    if (user) status = "AUTHENTICATED";
+
+    return (
+        <AuthContext.Provider
+            value={{
+                status,
+                hasSession: !!sessionId,
+                sessionId,
+                user: user!,
+                refetch,
+                logOut,
+            }}
+        >
+            {children}
+        </AuthContext.Provider>
+    );
+};
+
+export const getAuthContext = () => {
+    const { PROPERTIES_INJECT } = React.useContext(SharpifyApi.SharpifyReact.TemplateContext);
+    return (PROPERTIES_INJECT || (window as any).PROPERTIES_INJECT)
+        .context_authContext as typeof AuthContext;
+};
